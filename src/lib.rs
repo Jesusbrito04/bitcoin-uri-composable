@@ -13,7 +13,7 @@ pub struct Bip321 {
     pub message: Option<String>,
     pub pop: Option<String>,
     pub pop_required: bool,
-    pub instructions: HashMap<String, Vec<String>>, 
+    pub instructions: HashMap<String, Vec<String>>,
 }
 
 #[derive(Debug)]
@@ -26,6 +26,8 @@ pub enum Bip321Errors {
     InvalidAddress,
     InvalidAmount,
     NoOnePaymentWasFound,
+    InvalidEncoding,
+    InvalidRequiredPayment,
 }
 
 trait Bip321parser {
@@ -47,7 +49,7 @@ impl Default for Bip321 {
             message: None,
             pop_required: false,
             pop: None,
-            instructions: HashMap::new()
+            instructions: HashMap::new(),
         }
     }
 }
@@ -109,29 +111,46 @@ impl FromStr for Bip321 {
                         result.amount = Some(amt);
                     }
                     "label" => {
-                        let label = decode(value).expect("UFT-8").into_owned();
-                        result.label = Some(label);
-                        seens.insert(key_lower);
+                        result.label = Some(decode(value).expect("UFT-8").into_owned());
                     }
                     "message" => {
-                        let message = decode(value).expect("UFT-8").into_owned();
-                        result.message = Some(message);
-                        seens.insert(key_lower);
+                        result.message = Some(decode(value).expect("UFT-8").into_owned());
                     }
                     "pop" | "req-pop" => {
-                        if seens.contains("pop") { return Err(Bip321Errors::DuplicateParams); }
-                        result.pop = Some(decode(value).map(|s| s.into_owned()).unwrap_or_default());
-                        if key_lower == "req-pop" { result.pop_required = true; }
-                        seens.insert("pop".to_string());
+                        let forbidden_schemes = ["http", "https", "file", "javascript", "mailto"];
+                        if seens.contains("pop") {
+                            return Err(Bip321Errors::DuplicateParams);
+                        }
+                        if key_lower == "req-pop" {
+                            result.pop_required = true;
+                        }
+                        let value_lower = value.to_lowercase();
+
+                        if forbidden_schemes
+                            .iter()
+                            .any(|&scheme| value_lower.starts_with(scheme))
+                        {
+                            return Err(Bip321Errors::IncorrectSchema);
+                        }
+                        let decoded_val = decode(value)
+                            .map(|s| s.into_owned())
+                            .map_err(|_| Bip321Errors::InvalidEncoding)?;
+
+                        result.pop = Some(decoded_val);
                     }
                     _ => {
                         if key_lower.starts_with("req-") {
-                            return Err(Bip321Errors::DuplicateParams);
+                            let (_req, key) = key.split_once("-").unwrap_or((&key_lower, ""));
+                            if !result.instructions.contains_key(key) {
+                                return Err(Bip321Errors::InvalidRequiredPayment);
+                            }
                         }
-                        result.instructions
-                        .entry(key_lower)
-                        .or_default()
-                        .push(decode(value).ok().map(|s| s.into_owned()).unwrap_or_default());
+                        result.instructions.entry(key_lower).or_default().push(
+                            decode(value)
+                                .ok()
+                                .map(|s| s.into_owned())
+                                .unwrap_or_default(),
+                        );
                     }
                 }
             }
