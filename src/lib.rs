@@ -1,23 +1,60 @@
 use bitcoin::Denomination;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::str::FromStr;
 use urlencoding::decode;
 
 use bitcoin::{Address, Amount, address::NetworkUnchecked};
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct Bip321 {
+pub struct Bip321<T: Bip321ExtraHandle> {
     pub address: Option<Address<NetworkUnchecked>>,
     pub amount: Option<Amount>,
     pub label: Option<String>,
     pub message: Option<String>,
     pub pop: Option<String>,
     pub pop_required: bool,
-    pub instructions: HashMap<String, Vec<String>>,
+    pub extras: T,
 }
 
-#[derive(Debug)]
-pub struct NoExtra {}
+#[derive(Debug, Default)]
+pub struct MyExtras {
+    pj: String,
+}
+
+impl Bip321ExtraHandle for MyExtras {
+    fn handle_param(&mut self, key: &str, value: String) -> Result<(), Bip321Errors> {
+        match key {
+            "pj" => {
+                self.pj = value;
+                Ok(())
+            }
+            k if key.starts_with("req-") => {
+                let stripped_key = &k[4..];
+                if !self.support_key(stripped_key) {
+                    return Err(Bip321Errors::InvalidRequiredPayment);
+                }
+                self.handle_param(stripped_key, value)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.pj.is_empty()
+    }
+
+    fn support_key(&self, key: &str) -> bool {
+        matches!(key, "pj")
+    }
+}
+
+pub trait Bip321ExtraHandle: Default {
+    fn handle_param(&mut self, key: &str, value: String) -> Result<(), Bip321Errors>;
+
+    fn is_empty(&self) -> bool;
+
+    fn support_key(&self, key: &str) -> bool; 
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Bip321Errors {
@@ -30,17 +67,7 @@ pub enum Bip321Errors {
     InvalidRequiredPayment,
 }
 
-trait Bip321parser {
-    fn parse_url_to_bip321(&self) -> Result<Bip321, Bip321Errors>;
-}
-
-impl Bip321parser for str {
-    fn parse_url_to_bip321(&self) -> Result<Bip321, Bip321Errors> {
-        self.parse::<Bip321>()
-    }
-}
-
-impl Default for Bip321 {
+impl<T: Bip321ExtraHandle> Default for Bip321<T> {
     fn default() -> Self {
         Bip321 {
             address: None,
@@ -49,12 +76,12 @@ impl Default for Bip321 {
             message: None,
             pop_required: false,
             pop: None,
-            instructions: HashMap::new(),
+            extras: T::default(),
         }
     }
 }
 
-impl FromStr for Bip321 {
+impl<T: Bip321ExtraHandle> FromStr for Bip321<T> {
     type Err = Bip321Errors;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -71,7 +98,7 @@ impl FromStr for Bip321 {
         };
 
         let mut seens = HashSet::new();
-        let mut result = Bip321::default();
+        let mut result: Bip321<T> = Bip321::default();
 
         if !address_str.is_empty() {
             let addr = address_str
@@ -111,10 +138,20 @@ impl FromStr for Bip321 {
                         result.amount = Some(amt);
                     }
                     "label" => {
-                        result.label = Some(decode(value).expect("UFT-8").into_owned());
+                        result.label = Some(
+                            decode(value)
+                                .map_err(|_| Bip321Errors::InvalidEncoding)
+                                .unwrap()
+                                .into_owned(),
+                        );
                     }
                     "message" => {
-                        result.message = Some(decode(value).expect("UFT-8").into_owned());
+                        result.message = Some(
+                            decode(value)
+                                .map_err(|_| Bip321Errors::InvalidEncoding)
+                                .unwrap()
+                                .into_owned(),
+                        );
                     }
                     "pop" | "req-pop" => {
                         let forbidden_schemes = ["http", "https", "file", "javascript", "mailto"];
@@ -139,23 +176,17 @@ impl FromStr for Bip321 {
                         result.pop = Some(decoded_val);
                     }
                     _ => {
-                        if key_lower.starts_with("req-") {
-                            let (_req, key) = key.split_once("-").unwrap_or((&key_lower, ""));
-                            if !result.instructions.contains_key(key) {
-                                return Err(Bip321Errors::InvalidRequiredPayment);
-                            }
-                        }
-                        result.instructions.entry(key_lower).or_default().push(
-                            decode(value)
-                                .ok()
-                                .map(|s| s.into_owned())
-                                .unwrap_or_default(),
-                        );
+                        let decoded_val = decode(value)
+                            .map(|s| s.into_owned())
+                            .map_err(|_| Bip321Errors::InvalidEncoding)?;
+
+                        result.extras.handle_param(&key_lower, decoded_val)?;
                     }
                 }
             }
         }
-        if result.address.is_none() && result.instructions.is_empty() {
+
+        if result.address.is_none() && result.extras.is_empty() {
             return Err(Bip321Errors::NoOnePaymentWasFound);
         }
 
@@ -168,8 +199,8 @@ mod test {
     use super::*;
     #[test]
     fn url() {
-        let url = "bitcoin:?lightning=lnbc420bogusinvoice";
-        let bip321result = Bip321parser::parse_url_to_bip321(url);
+        let url = "bitcoin:?req-sp=sp1qsilentpayment";
+        let bip321result = url.parse::<Bip321<MyExtras>>();
         println!("{:#?}", bip321result);
     }
 }
