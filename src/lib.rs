@@ -1,9 +1,8 @@
 use bitcoin::Denomination;
-use std::collections::HashSet;
+use bitcoin::{Address, Amount, address::NetworkUnchecked};
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use urlencoding::decode;
-
-use bitcoin::{Address, Amount, address::NetworkUnchecked};
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Bip321<T: Bip321ExtraHandle> {
@@ -16,44 +15,12 @@ pub struct Bip321<T: Bip321ExtraHandle> {
     pub extras: T,
 }
 
-#[derive(Debug, Default)]
-pub struct MyExtras {
-    pj: String,
-}
-
-impl Bip321ExtraHandle for MyExtras {
-    fn handle_param(&mut self, key: &str, value: String) -> Result<(), Bip321Errors> {
-        match key {
-            "pj" => {
-                self.pj = value;
-                Ok(())
-            }
-            k if key.starts_with("req-") => {
-                let stripped_key = &k[4..];
-                if !self.support_key(stripped_key) {
-                    return Err(Bip321Errors::InvalidRequiredPayment);
-                }
-                self.handle_param(stripped_key, value)
-            }
-            _ => Ok(()),
-        }
-    }
-
-    fn is_empty(&self) -> bool {
-        self.pj.is_empty()
-    }
-
-    fn support_key(&self, key: &str) -> bool {
-        matches!(key, "pj")
-    }
-}
-
 pub trait Bip321ExtraHandle: Default {
-    fn handle_param(&mut self, key: &str, value: String) -> Result<(), Bip321Errors>;
+    fn handle_param(&mut self, key: &str, value: Vec<String>) -> Result<(), Bip321Errors>;
 
     fn is_empty(&self) -> bool;
 
-    fn support_key(&self, key: &str) -> bool; 
+    fn is_supported_key(&self, key: &str) -> bool;
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -98,6 +65,7 @@ impl<T: Bip321ExtraHandle> FromStr for Bip321<T> {
         };
 
         let mut seens = HashSet::new();
+        let mut extra_params: HashMap<String, Vec<String>> = HashMap::new();
         let mut result: Bip321<T> = Bip321::default();
 
         if !address_str.is_empty() {
@@ -140,24 +108,19 @@ impl<T: Bip321ExtraHandle> FromStr for Bip321<T> {
                     "label" => {
                         result.label = Some(
                             decode(value)
-                                .map_err(|_| Bip321Errors::InvalidEncoding)
-                                .unwrap()
+                                .map_err(|_| Bip321Errors::InvalidEncoding)?
                                 .into_owned(),
                         );
                     }
                     "message" => {
                         result.message = Some(
                             decode(value)
-                                .map_err(|_| Bip321Errors::InvalidEncoding)
-                                .unwrap()
+                                .map_err(|_| Bip321Errors::InvalidEncoding)?
                                 .into_owned(),
                         );
                     }
                     "pop" | "req-pop" => {
                         let forbidden_schemes = ["http", "https", "file", "javascript", "mailto"];
-                        if seens.contains("pop") {
-                            return Err(Bip321Errors::DuplicateParams);
-                        }
                         if key_lower == "req-pop" {
                             result.pop_required = true;
                         }
@@ -179,10 +142,24 @@ impl<T: Bip321ExtraHandle> FromStr for Bip321<T> {
                         let decoded_val = decode(value)
                             .map(|s| s.into_owned())
                             .map_err(|_| Bip321Errors::InvalidEncoding)?;
-
-                        result.extras.handle_param(&key_lower, decoded_val)?;
+                        extra_params
+                            .entry(key_lower.clone())
+                            .or_insert(Vec::new())
+                            .push(decoded_val);
                     }
                 }
+            }
+        }
+
+        for (key, values) in extra_params {
+            if key.starts_with("req-") {
+                let stripped = &key[4..];
+                if !result.extras.is_supported_key(stripped) {
+                    return Err(Bip321Errors::InvalidRequiredPayment);
+                }
+                result.extras.handle_param(stripped, values)?;
+            } else {
+                result.extras.handle_param(&key, values)?;
             }
         }
 
@@ -194,12 +171,37 @@ impl<T: Bip321ExtraHandle> FromStr for Bip321<T> {
     }
 }
 
+#[derive(Debug, Default)]
+pub struct MyExtras {
+    pj: Vec<String>,
+}
+
+impl Bip321ExtraHandle for MyExtras {
+    fn handle_param(&mut self, key: &str, value: Vec<String>) -> Result<(), Bip321Errors> {
+        match key {
+            "pj" => {
+                self.pj.extend(value);
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.pj.is_empty()
+    }
+
+    fn is_supported_key(&self, key: &str) -> bool {
+        matches!(key, "pj")
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
     #[test]
     fn url() {
-        let url = "bitcoin:?req-sp=sp1qsilentpayment";
+        let url = "bitcoin:?pj=https://endpoint1.com&pj=https://endpoint2.com&bc=bc1q...&bc=bc1p";
         let bip321result = url.parse::<Bip321<MyExtras>>();
         println!("{:#?}", bip321result);
     }
