@@ -171,6 +171,12 @@ impl<T: Bip321ExtraHandle> FromStr for Bip321<T> {
             return Err(Bip321Errors::NoOnePaymentWasFound);
         }
 
+        if let Some(ext) = result.extras.as_ref() {
+            if ext.is_empty() {
+                result.extras = None;
+            }
+        }
+
         Ok(result)
     }
 }
@@ -190,11 +196,11 @@ impl Bip321ExtraHandle for MyExtras {
                 Ok(())
             }
             "lightning" => {
-                self.pj.extend(value);
+                self.lightning.extend(value);
                 Ok(())
             }
             "sp" => {
-                self.pj.extend(value);
+                self.sp.extend(value);
                 Ok(())
             }
             _ => Ok(()),
@@ -213,43 +219,53 @@ impl Bip321ExtraHandle for MyExtras {
 #[cfg(test)]
 mod test {
     use super::*;
-    // Mainnet Network
+    // Mainnet Network 
     const LEGACY_ADDR: &str = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa";
     const P2SH_ADDR: &str = "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy";
     const SEGWIT_ADDR: &str = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4";
-    const TAPROOT_ADDR: &str = "tb1p8p0m6eclmsc7d86f7vunh6q422p05u7c4yknuxl0k6w8625902pqqz9xkd";
+    const TAPROOT_ADDR: &str = "bc1p0hc953htakzhgfvpju4q6d6y5kncvm87pjnzdj77wye23kqsln5sy4j69g";
 
     #[test]
     fn only_the_address() {
         let url_legacy = format!("bitcoin:{}", LEGACY_ADDR);
         let result_legacy = url_legacy.parse::<Bip321<MyExtras>>().unwrap();
-        assert!(
-            result_legacy.address.unwrap()
-                == Address::from_str(LEGACY_ADDR).unwrap()
-        );
+        assert!(result_legacy.address.unwrap() == Address::from_str(LEGACY_ADDR).unwrap());
+        assert!(result_legacy.extras.is_none());
 
         let url_p2sh = format!("bitcoin:{}", P2SH_ADDR);
         let result_p2sh = url_p2sh.parse::<Bip321<MyExtras>>().unwrap();
-        assert!(
-            result_p2sh.address.unwrap()
-                == Address::from_str(P2SH_ADDR).unwrap()
-        );
+        assert!(result_p2sh.address.unwrap() == Address::from_str(P2SH_ADDR).unwrap());
+        assert!(result_p2sh.extras.is_none());
 
         let url_segwit = format!("bitcoin:{}", SEGWIT_ADDR);
         let result_segwit = url_segwit.parse::<Bip321<MyExtras>>().unwrap();
-        assert!(
-            result_segwit.address.unwrap()
-                == Address::from_str(SEGWIT_ADDR).unwrap()
-        );
+        assert!(result_segwit.address.unwrap() == Address::from_str(SEGWIT_ADDR).unwrap());
+        assert!(result_segwit.extras.is_none());
 
         let url_taproot = format!("bitcoin:{}", TAPROOT_ADDR);
         let result_taproot = url_taproot.parse::<Bip321<MyExtras>>().unwrap();
-        assert!(
-            result_taproot.address.unwrap()
-                == Address::from_str(TAPROOT_ADDR).unwrap()
-        );
+        assert!(result_taproot.address.unwrap() == Address::from_str(TAPROOT_ADDR).unwrap());
+        assert!(result_taproot.extras.is_none());
     }
 
     #[test]
-    fn only_extra_params() {}
+    fn only_params() {
+        let url = format!(
+            "bitcoin:?amount=1.5&label=Donation&sp=sp1qsilentpayment&pj=https://endpoint1.com&pj=https://endpoint2.com&lightning=lnbc1_invoice_test_vector",
+        );
+        let result = url.parse::<Bip321<MyExtras>>().unwrap();
+        
+        // Verify common params
+        assert!(result.address.is_none());
+        assert_eq!(result.amount.unwrap(), Amount::from_btc(1.5).unwrap());
+        assert_eq!(result.label.unwrap(), "Donation");
+
+        // Verify extra params
+        assert_eq!(result.extras.as_ref().unwrap().sp[0], "sp1qsilentpayment");
+        assert_eq!(result.extras.as_ref().unwrap().lightning[0], "lnbc1_invoice_test_vector");
+
+        // Verify extra duplicate params
+        assert_eq!(result.extras.as_ref().unwrap().pj[0], "https://endpoint1.com");
+        assert_eq!(result.extras.as_ref().unwrap().pj[1], "https://endpoint2.com");
+    }   
 }
