@@ -1,5 +1,4 @@
-use bitcoin::Denomination;
-use bitcoin::{Address, Amount, address::NetworkUnchecked};
+use bitcoin::{Denomination, Address, Amount, address::NetworkUnchecked};
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use urlencoding::decode;
@@ -182,13 +181,13 @@ impl<T: Bip321ExtraHandle> FromStr for Bip321<T> {
 }
 
 #[derive(Debug, Default)]
-pub struct MyExtras {
+pub struct ExtraExample {
     pj: Vec<String>,
     sp: Vec<String>,
     lightning: Vec<String>,
 }
 
-impl Bip321ExtraHandle for MyExtras {
+impl Bip321ExtraHandle for ExtraExample {
     fn handle_param(&mut self, key: &str, value: Vec<String>) -> Result<(), Bip321Errors> {
         match key {
             "pj" => {
@@ -234,7 +233,7 @@ mod test {
             (format!("bitcoin:{}", TAPROOT_ADDR), TAPROOT_ADDR),
         ];
         for (url, expected_address) in testcase {
-            let result = url.parse::<Bip321<MyExtras>>().unwrap();
+            let result = url.parse::<Bip321<ExtraExample>>().unwrap();
             assert!(result.address.unwrap() == Address::from_str(expected_address).unwrap());
             assert!(result.extras.is_none());
         }
@@ -245,7 +244,7 @@ mod test {
         let url = format!(
             "bitcoin:?amount=1.5&label=Donation&sp=sp1qsilentpayment&pj=https://endpoint1.com&pj=https://endpoint2.com&lightning=lnbc1_invoice_test_vector",
         );
-        let result = url.parse::<Bip321<MyExtras>>().unwrap();
+        let result = url.parse::<Bip321<ExtraExample>>().unwrap();
 
         // Verify common params
         assert!(result.address.is_none());
@@ -283,7 +282,7 @@ mod test {
         ];
 
         for (url, expected_key) in testcase {
-            let result = url.parse::<Bip321<MyExtras>>();
+            let result = url.parse::<Bip321<ExtraExample>>();
 
             assert!(result.is_err());
             assert_eq!(
@@ -296,7 +295,7 @@ mod test {
     #[test]
     fn error_on_missing_address_and_extras() {
         let url = "bitcoin:?amount=2.5&label=test";
-        let result = url.parse::<Bip321<MyExtras>>();
+        let result = url.parse::<Bip321<ExtraExample>>();
 
         assert_eq!(result.unwrap_err(), Bip321Errors::NoOnePaymentWasFound);
     }
@@ -304,8 +303,8 @@ mod test {
     #[test]
     fn error_on_missing_address_and_extras_unknown() {
         let url_unknown = "bitcoin:?unknown=123&another=456";
-        let result = url_unknown.parse::<Bip321<MyExtras>>();
-
+        let result = url_unknown.parse::<Bip321<ExtraExample>>();
+        
         assert_eq!(result.unwrap_err(), Bip321Errors::NoOnePaymentWasFound);
     }
 }
