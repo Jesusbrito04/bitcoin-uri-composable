@@ -208,7 +208,7 @@ impl Bip321ExtraHandle for MyExtras {
     }
 
     fn is_empty(&self) -> bool {
-        self.pj.is_empty() | self.lightning.is_empty() | self.sp.is_empty()
+        self.pj.is_empty() && self.lightning.is_empty() && self.sp.is_empty()
     }
 
     fn is_supported_key(&self, key: &str) -> bool {
