@@ -1,4 +1,4 @@
-use bitcoin::{Denomination, Address, Amount, address::NetworkUnchecked};
+use bitcoin::{Address, Amount, Denomination, address::NetworkUnchecked};
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use urlencoding::decode;
@@ -304,7 +304,7 @@ mod test {
     fn error_on_missing_address_and_extras_unknown() {
         let url_unknown = "bitcoin:?unknown=123&another=456";
         let result = url_unknown.parse::<Bip321<ExtraExample>>();
-        
+
         assert_eq!(result.unwrap_err(), Bip321Errors::NoOnePaymentWasFound);
     }
 }
