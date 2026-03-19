@@ -25,9 +25,9 @@ pub trait Bip321ExtraHandle: Default {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Bip321Errors {
-    DuplicateParams,
+    DuplicateParam(String),
     IncorrectSchema,
-    InvalidAddress,
+    InvalidAddress(String),
     InvalidAmount,
     NoOnePaymentWasFound,
     InvalidEncoding,
@@ -71,7 +71,7 @@ impl<T: Bip321ExtraHandle> FromStr for Bip321<T> {
         if !address_str.is_empty() {
             let addr = address_str
                 .parse::<Address<NetworkUnchecked>>()
-                .map_err(|_| Bip321Errors::InvalidAddress)?;
+                .map_err(|_| Bip321Errors::InvalidAddress(address_str.to_string()))?;
 
             result.address = Some(addr);
         }
@@ -90,7 +90,7 @@ impl<T: Bip321ExtraHandle> FromStr for Bip321<T> {
                 match check_key.as_str() {
                     "amount" | "label" | "message" | "pop" => {
                         if !seens.insert(check_key.clone()) {
-                            return Err(Bip321Errors::DuplicateParams);
+                            return Err(Bip321Errors::DuplicateParam(check_key));
                         }
                     }
                     _ => {}
