@@ -12,7 +12,7 @@ pub struct Bip321<T: Bip321ExtraHandle> {
     pub message: Option<String>,
     pub pop: Option<String>,
     pub pop_required: bool,
-    pub extras: T,
+    pub extras: Option<T>,
 }
 
 pub trait Bip321ExtraHandle: Default {
@@ -43,7 +43,7 @@ impl<T: Bip321ExtraHandle> Default for Bip321<T> {
             message: None,
             pop_required: false,
             pop: None,
-            extras: T::default(),
+            extras: None,
         }
     }
 }
@@ -121,22 +121,25 @@ impl<T: Bip321ExtraHandle> FromStr for Bip321<T> {
                     }
                     "pop" | "req-pop" => {
                         let forbidden_schemes = ["http", "https", "file", "javascript", "mailto"];
-                        if key_lower == "req-pop" {
-                            result.pop_required = true;
-                        }
-                        let value_lower = value.to_lowercase();
-
-                        if forbidden_schemes
-                            .iter()
-                            .any(|&scheme| value_lower.starts_with(scheme))
-                        {
-                            return Err(Bip321Errors::IncorrectSchema);
-                        }
                         let decoded_val = decode(value)
                             .map(|s| s.into_owned())
                             .map_err(|_| Bip321Errors::InvalidEncoding)?;
+                        let value_lower = decoded_val.to_lowercase();
 
-                        result.pop = Some(decoded_val);
+                        if forbidden_schemes
+                            .iter()
+                            .any(|&s| value_lower.starts_with(s))
+                        {
+                            if key_lower == "req-pop" {
+                                return Err(Bip321Errors::IncorrectSchema);
+                            }
+                            result.pop = None;
+                        } else {
+                            result.pop = Some(decoded_val);
+                            if key_lower == "req-pop" {
+                                result.pop_required = true;
+                            }
+                        }
                     }
                     _ => {
                         let decoded_val = decode(value)
@@ -152,18 +155,19 @@ impl<T: Bip321ExtraHandle> FromStr for Bip321<T> {
         }
 
         for (key, values) in extra_params {
+            let ext = result.extras.get_or_insert_with(T::default);
             if key.starts_with("req-") {
                 let stripped = &key[4..];
-                if !result.extras.is_supported_key(stripped) {
+                if !ext.is_supported_key(stripped) {
                     return Err(Bip321Errors::InvalidRequiredPayment);
                 }
-                result.extras.handle_param(stripped, values)?;
+                ext.handle_param(stripped, values)?;
             } else {
-                result.extras.handle_param(&key, values)?;
+                ext.handle_param(&key, values)?
             }
         }
 
-        if result.address.is_none() && result.extras.is_empty() {
+        if result.address.is_none() && result.extras.is_none() {
             return Err(Bip321Errors::NoOnePaymentWasFound);
         }
 
