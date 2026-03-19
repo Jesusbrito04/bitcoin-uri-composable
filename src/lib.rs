@@ -178,6 +178,8 @@ impl<T: Bip321ExtraHandle> FromStr for Bip321<T> {
 #[derive(Debug, Default)]
 pub struct MyExtras {
     pj: Vec<String>,
+    sp: Vec<String>,
+    lightning: Vec<String>,
 }
 
 impl Bip321ExtraHandle for MyExtras {
@@ -187,26 +189,67 @@ impl Bip321ExtraHandle for MyExtras {
                 self.pj.extend(value);
                 Ok(())
             }
+            "lightning" => {
+                self.pj.extend(value);
+                Ok(())
+            }
+            "sp" => {
+                self.pj.extend(value);
+                Ok(())
+            }
             _ => Ok(()),
         }
     }
 
     fn is_empty(&self) -> bool {
-        self.pj.is_empty()
+        self.pj.is_empty() | self.lightning.is_empty() | self.sp.is_empty()
     }
 
     fn is_supported_key(&self, key: &str) -> bool {
-        matches!(key, "pj")
+        matches!(key, "pj" | "lightning" | "sp")
     }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
+    // Mainnet Network
+    const LEGACY_ADDR: &str = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa";
+    const P2SH_ADDR: &str = "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy";
+    const SEGWIT_ADDR: &str = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4";
+    const TAPROOT_ADDR: &str = "tb1p8p0m6eclmsc7d86f7vunh6q422p05u7c4yknuxl0k6w8625902pqqz9xkd";
+
     #[test]
-    fn url() {
-        let url = "bitcoin:?pj=https://endpoint1.com&pj=https://endpoint2.com&bc=bc1q...&bc=bc1p";
-        let bip321result = url.parse::<Bip321<MyExtras>>();
-        println!("{:#?}", bip321result);
+    fn only_the_address() {
+        let url_legacy = format!("bitcoin:{}", LEGACY_ADDR);
+        let result_legacy = url_legacy.parse::<Bip321<MyExtras>>().unwrap();
+        assert!(
+            result_legacy.address.unwrap()
+                == Address::from_str(LEGACY_ADDR).unwrap()
+        );
+
+        let url_p2sh = format!("bitcoin:{}", P2SH_ADDR);
+        let result_p2sh = url_p2sh.parse::<Bip321<MyExtras>>().unwrap();
+        assert!(
+            result_p2sh.address.unwrap()
+                == Address::from_str(P2SH_ADDR).unwrap()
+        );
+
+        let url_segwit = format!("bitcoin:{}", SEGWIT_ADDR);
+        let result_segwit = url_segwit.parse::<Bip321<MyExtras>>().unwrap();
+        assert!(
+            result_segwit.address.unwrap()
+                == Address::from_str(SEGWIT_ADDR).unwrap()
+        );
+
+        let url_taproot = format!("bitcoin:{}", TAPROOT_ADDR);
+        let result_taproot = url_taproot.parse::<Bip321<MyExtras>>().unwrap();
+        assert!(
+            result_taproot.address.unwrap()
+                == Address::from_str(TAPROOT_ADDR).unwrap()
+        );
     }
+
+    #[test]
+    fn only_extra_params() {}
 }
