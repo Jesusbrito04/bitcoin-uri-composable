@@ -1,11 +1,15 @@
-use bitcoin::{Address, Amount, Denomination, address::NetworkUnchecked};
+use bitcoin::{Address, Network, Amount, Denomination, address::{NetworkUnchecked, NetworkChecked, NetworkValidation}};
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use urlencoding::decode;
 
-#[derive(Debug, PartialEq, Eq)]
-pub struct Bip321<T: Bip321ExtraHandle> {
-    pub address: Option<Address<NetworkUnchecked>>,
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct Bip321<T, NetVal = NetworkUnchecked>
+where
+    T: Bip321ExtraHandle,
+    NetVal: NetworkValidation,
+{
+    pub address: Option<Address<NetVal>>,
     pub amount: Option<Amount>,
     pub label: Option<String>,
     pub message: Option<String>,
@@ -22,7 +26,7 @@ pub trait Bip321ExtraHandle: Default {
     fn is_supported_key(&self, key: &str) -> bool;
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Bip321Errors {
     DuplicateParam(String),
     IncorrectSchema,
@@ -33,7 +37,31 @@ pub enum Bip321Errors {
     InvalidRequiredPayment,
 }
 
-impl<T: Bip321ExtraHandle> Default for Bip321<T> {
+impl<T: Bip321ExtraHandle> Bip321<T, NetworkUnchecked> {
+    pub fn into_checked(self, network: Network) -> Result<Bip321<T, NetworkChecked>, Bip321Errors> {
+        let checked_addr = match self.address {
+            Some(addr) => {
+                let checked = addr
+                    .require_network(network)
+                    .map_err(|_| Bip321Errors::InvalidAddress("Wrong Network".to_string()))?;
+                Some(checked)
+            }
+            None => None,
+        };
+
+        Ok(Bip321 {
+            address: checked_addr,
+            amount: self.amount,
+            label: self.label,
+            message: self.message,
+            pop: self.pop,
+            pop_required: self.pop_required,
+            extras: self.extras,
+        })
+    }
+}
+
+impl<T: Bip321ExtraHandle> Default for Bip321<T, NetworkUnchecked> {
     fn default() -> Self {
         Bip321 {
             address: None,
@@ -47,7 +75,7 @@ impl<T: Bip321ExtraHandle> Default for Bip321<T> {
     }
 }
 
-impl<T: Bip321ExtraHandle> FromStr for Bip321<T> {
+impl<T: Bip321ExtraHandle> FromStr for Bip321<T, NetworkUnchecked> {
     type Err = Bip321Errors;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -65,7 +93,7 @@ impl<T: Bip321ExtraHandle> FromStr for Bip321<T> {
 
         let mut seens = HashSet::new();
         let mut extra_params: HashMap<String, Vec<String>> = HashMap::new();
-        let mut result: Bip321<T> = Bip321::default();
+        let mut result: Bip321<T, NetworkUnchecked> = Bip321::default();
 
         if !address_str.is_empty() {
             let addr = address_str
@@ -180,7 +208,7 @@ impl<T: Bip321ExtraHandle> FromStr for Bip321<T> {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, PartialEq, Eq, Clone, Default)]
 pub struct ExtraExample {
     pj: Vec<String>,
     sp: Vec<String>,
@@ -233,9 +261,20 @@ mod test {
             (format!("bitcoin:{}", TAPROOT_ADDR), TAPROOT_ADDR),
         ];
         for (url, expected_address) in testcase {
-            let result = url.parse::<Bip321<ExtraExample>>().unwrap();
-            assert!(result.address.unwrap() == Address::from_str(expected_address).unwrap());
-            assert!(result.extras.is_none());
+            let result: Bip321<ExtraExample> = url.parse().unwrap();
+            assert!(
+                result.address.clone().unwrap() == Address::from_str(expected_address).unwrap()
+            );
+
+            let checked: Bip321<ExtraExample, NetworkChecked> =
+                result.into_checked(Network::Bitcoin).unwrap();
+            assert!(
+                checked.address.unwrap()
+                    == Address::from_str(expected_address)
+                        .unwrap()
+                        .assume_checked()
+            );
+            assert!(checked.extras.is_none());
         }
     }
 
@@ -244,7 +283,7 @@ mod test {
         let url = format!(
             "bitcoin:?amount=1.5&label=Donation&sp=sp1qsilentpayment&pj=https://endpoint1.com&pj=https://endpoint2.com&lightning=lnbc1_invoice_test_vector",
         );
-        let result = url.parse::<Bip321<ExtraExample>>().unwrap();
+        let result: Bip321<ExtraExample> = url.parse().unwrap();
 
         // Verify common params
         assert!(result.address.is_none());
@@ -282,7 +321,7 @@ mod test {
         ];
 
         for (url, expected_key) in testcase {
-            let result = url.parse::<Bip321<ExtraExample>>();
+            let result: Result<Bip321<ExtraExample>, Bip321Errors> = url.parse();
 
             assert!(result.is_err());
             assert_eq!(
@@ -295,7 +334,7 @@ mod test {
     #[test]
     fn error_on_missing_address_and_extras() {
         let url = "bitcoin:?amount=2.5&label=test";
-        let result = url.parse::<Bip321<ExtraExample>>();
+        let result: Result<Bip321<ExtraExample>, Bip321Errors> = url.parse();
 
         assert_eq!(result.unwrap_err(), Bip321Errors::NoOnePaymentWasFound);
     }
@@ -303,8 +342,48 @@ mod test {
     #[test]
     fn error_on_missing_address_and_extras_unknown() {
         let url_unknown = "bitcoin:?unknown=123&another=456";
-        let result = url_unknown.parse::<Bip321<ExtraExample>>();
+        let result: Result<Bip321<ExtraExample>, Bip321Errors> = url_unknown.parse();
 
         assert_eq!(result.unwrap_err(), Bip321Errors::NoOnePaymentWasFound);
+    }
+
+    #[test]
+    fn error_on_wrong_network() {
+        // Mainnet Address
+        let url = format!("bitcoin:{}", LEGACY_ADDR);
+        let result: Bip321<ExtraExample> = url.parse().unwrap();
+
+        // Trying to validate using Testnet
+        let checked = result.into_checked(Network::Testnet);
+
+        assert!(checked.is_err());
+        assert_eq!(
+            checked.unwrap_err(),
+            Bip321Errors::InvalidAddress("Wrong Network".to_string())
+        );
+    }
+
+    #[test]
+    fn into_checked_works_without_address() {
+        let url = "bitcoin:?lightning=lnbc1...";
+        let result: Bip321<ExtraExample> = url.parse().unwrap();
+
+        // The address is empty. Therefore, nothing will be validated.
+        let checked = result.into_checked(Network::Bitcoin);
+
+        assert!(checked.is_ok());
+        assert!(checked.unwrap().address.is_none());
+    }
+
+    #[test]
+    fn testnet_address_validation() {
+        let testnet_addr = "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx";
+        let url = format!("bitcoin:{}", testnet_addr);
+
+        let result: Bip321<ExtraExample> = url.parse().unwrap();
+
+        // This will fail in Mainnet, but succeed in Testnet
+        assert!(result.clone().into_checked(Network::Bitcoin).is_err());
+        assert!(result.into_checked(Network::Testnet).is_ok());
     }
 }
