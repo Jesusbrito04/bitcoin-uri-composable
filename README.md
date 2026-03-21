@@ -8,6 +8,7 @@
   - Prevents duplicate parameters for standard keys (label, message, amount, pop).
   - Correctly handles req- (required) parameters for forward compatibility.
   - Validates Bitcoin amounts with 8-decimal precision.
+  - Network Validation: Effortlessly verify if an address matches your wallet's current network (Mainnet, Testnet, etc.).
 
 ## 📦 Installation
 
@@ -18,17 +19,26 @@ bitcoin-uri-composer = "0.1.0"
 ```
 
 ## 🛠 Usage
-**Basic Parsing**
+**Basic Parsing & Network Checking**
 ```rust
 use bitcoin_uri_composer::{ Bip321, ExtrasExample };
 
 fn main() {
-    let uri = "bitcoin:bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4?amount=1.5&label=Coffee";
-    let payment = uri.parse::<Bip321<ExtraExample>>().unwrap();
-
-    println!("Sending to: {:?}", payment.address);
-    println!("Amount: {:?}", payment.amount);
-    println!("Label: {:?}", payment.label);
+    use bitcoin::Network;
+    use bitcoin_uri_composer::{Bip321, ExtraExample};
+    
+    fn main() {
+        let uri = "bitcoin:bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4?amount=1.5";
+        
+        // Parse as Unchecked first
+        let unchecked = uri.parse::<Bip321<ExtraExample>>().unwrap();
+        
+        // Validate against your wallet's network
+        match unchecked.into_checked(Network::Bitcoin) {
+            Ok(payment) => println!("Valid payment for Mainnet!"),
+            Err(e) => eprintln!("Invalid payment: {:?}", e),
+        }
+    }
 }
 ```
 
@@ -55,6 +65,7 @@ if let Some(extras) = payment.extras {
 pub trait Bip321ExtraHandle: Default {
     fn handle_param(&mut self, key: &str, value: Vec<String>) -> Result<(), Bip321Errors>;
     fn is_empty(&self) -> bool;
+    fn validate(&self, _network: Network) -> Result<(), Bip321Errors> {Ok(())}
     fn is_supported_key(&self, key: &str) -> bool;
 }
 ```
@@ -92,6 +103,16 @@ impl Bip321ExtraHandle for MyWalletExtras {
         }
     }
 
+    fn validate(&self, _network: Network) -> Result<(), Bip321Errors> {
+        if let Some(ref url) = self.payjoin_endpoints[0] {
+            // Payjoin Rule: Must be HTTPS or .onion
+            if !url.starts_with("https://") && !url.contains(".onion") {
+                return Err(Bip321Errors::InvalidRequiredPayment);
+            }
+        }
+        Ok(())
+    }
+
     // 2. Security: Which keys do you support? 
     // If a 'req-key' is found and this returns false, parsing will fail.
     fn is_supported_key(&self, key: &str) -> bool {
@@ -100,7 +121,7 @@ impl Bip321ExtraHandle for MyWalletExtras {
 
     // 3. Cleanup: If all fields are empty, the parser will return None for extras.
     fn is_empty(&self) -> bool {
-        self.payjoin_endpoints.is_empty() && self.lightning_invoice.is_none()
+        self.payjoin_endpoints.is_none() && self.lightning_invoice.is_none()
     }
 }
 ```
