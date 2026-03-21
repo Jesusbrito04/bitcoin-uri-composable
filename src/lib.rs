@@ -1,4 +1,7 @@
-use bitcoin::{Address, Network, Amount, Denomination, address::{NetworkUnchecked, NetworkChecked, NetworkValidation}};
+use bitcoin::{
+    Address, Amount, Denomination, Network,
+    address::{NetworkChecked, NetworkUnchecked, NetworkValidation},
+};
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use urlencoding::decode;
@@ -20,6 +23,10 @@ where
 
 pub trait Bip321ExtraHandle: Default {
     fn handle_param(&mut self, key: &str, value: Vec<String>) -> Result<(), Bip321Errors>;
+
+    fn validate(&self, _network: Network) -> Result<(), Bip321Errors> {
+        Ok(())
+    }
 
     fn is_empty(&self) -> bool;
 
@@ -48,6 +55,10 @@ impl<T: Bip321ExtraHandle> Bip321<T, NetworkUnchecked> {
             }
             None => None,
         };
+
+        if let Some(ext) = self.extras.as_ref() {
+            ext.validate(network)?;
+        }
 
         Ok(Bip321 {
             address: checked_addr,
@@ -157,10 +168,7 @@ impl<T: Bip321ExtraHandle> FromStr for Bip321<T, NetworkUnchecked> {
                             .iter()
                             .any(|&s| value_lower.starts_with(s))
                         {
-                            if key_lower == "req-pop" {
-                                return Err(Bip321Errors::IncorrectSchema);
-                            }
-                            result.pop = None;
+                            return Err(Bip321Errors::IncorrectSchema);
                         } else {
                             result.pop = Some(decoded_val);
                             if key_lower == "req-pop" {
@@ -385,5 +393,27 @@ mod test {
         // This will fail in Mainnet, but succeed in Testnet
         assert!(result.clone().into_checked(Network::Bitcoin).is_err());
         assert!(result.into_checked(Network::Testnet).is_ok());
+    }
+
+    #[test]
+    fn error_on_forbidden_req_pop_schemes() {
+        // BIP 321: A wallet MUST validate that the scheme is not http, https, file, javascript, or mailto.
+        // Since 'req-pop' (required), the full URI should be considered invalid.
+
+        let forbidden_testcases = vec![
+            "bitcoin:1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa?req-pop=http://rastreador.com/ip",
+            "bitcoin:1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa?req-pop=https://phishing.com/login",
+            "bitcoin:1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa?req-pop=javascript:alert('hack')",
+            "bitcoin:1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa?req-pop=file:///etc/shadow",
+            "bitcoin:1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa?req-pop=mailto:scam@ataque.com",
+        ];
+
+        for url in forbidden_testcases {
+            let result: Result<Bip321<ExtraExample>, Bip321Errors> = url.parse();
+
+            // This should fail.
+            assert!(result.is_err());
+            assert_eq!(result.unwrap_err(), Bip321Errors::IncorrectSchema);
+        }
     }
 }
