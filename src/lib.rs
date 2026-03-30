@@ -413,4 +413,62 @@ mod test {
             assert_eq!(result.unwrap_err(), Bip321Errors::IncorrectSchema);
         }
     }
+
+    #[test]
+    fn url_encoding_in_label_and_message() {
+        // BIP 321: The values ​​have to be encoded to (URL-encoded) correctly.
+        let url = format!(
+            "bitcoin:{}?label=Satoshi%20Nakamoto&message=Payment%20for%20services%21%3F",
+            LEGACY_ADDR
+        );
+        let result: Bip321<ExtraExample> = Bip321::parse_url(&url).unwrap();
+
+        assert_eq!(result.label.unwrap(), "Satoshi Nakamoto");
+        assert_eq!(result.message.unwrap(), "Payment for services!?");
+    }
+
+    #[test]
+    fn fail_on_unknown_required_parameter() {
+        // BIP 321: If a parameter starts with "req-" and the software doesn't understand it,
+        // MUST consider the entire URI as invalid.
+        let url = format!("bitcoin:{}?req-future=12345", LEGACY_ADDR);
+        let result: Result<Bip321<ExtraExample>, Bip321Errors> = Bip321::parse_url(&url);
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), Bip321Errors::InvalidRequiredPayment);
+    }
+
+    #[test]
+    fn success_on_known_required_parameter() {
+        let url = "bitcoin:?req-sp=sp1qsilentpayment";
+        let result: Bip321<ExtraExample> = Bip321::parse_url(url).unwrap();
+
+        assert!(result.address.is_none());
+        assert_eq!(result.extras.as_ref().unwrap().sp[0], "sp1qsilentpayment");
+    }
+
+    #[test]
+    fn invalid_amount_formats() {
+        let bad_amounts = vec![
+            format!("bitcoin:{}?amount=1,5", LEGACY_ADDR),
+            format!("bitcoin:{}?amount=-0.5", LEGACY_ADDR),
+            format!("bitcoin:{}?amount=1.5.0", LEGACY_ADDR),
+            format!("bitcoin:{}?amount=abc", LEGACY_ADDR),
+        ];
+
+        for url in bad_amounts {
+            let result: Result<Bip321<ExtraExample>, Bip321Errors> = Bip321::parse_url(&url);
+            assert!(result.is_err());
+            assert_eq!(result.unwrap_err(), Bip321Errors::InvalidAmount);
+        }
+    }
+
+    #[test]
+    fn fail_on_duplicate_amount() {
+        let url = format!("bitcoin:{}?amount=1.0&amount=2.0", LEGACY_ADDR);
+        let result: Result<Bip321<ExtraExample>, Bip321Errors> = Bip321::parse_url(&url);
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), Bip321Errors::DuplicateParam("amount"));
+    }
 }
