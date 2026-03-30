@@ -210,29 +210,35 @@ impl<'a, T: Bip321ExtraHandle<'a>> Bip321<'a, T, NetworkUnchecked> {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
-pub struct ExtraExample<'a> {
-    pj: Vec<Cow<'a, str>>,
-    sp: Vec<Cow<'a, str>>,
-    lightning: Vec<Cow<'a, str>>,
+pub struct ExtraExample {
+    pj: Vec<String>,
+    sp: Vec<String>,
+    lightning: Vec<String>,
 }
 
-impl<'a> Bip321ExtraHandle<'a> for ExtraExample<'a> {
+impl<'a> Bip321ExtraHandle<'a> for ExtraExample {
     fn handle_param(
         &mut self,
         key: &'a str,
-        value: Vec<Cow<'a, str>>,
+        values: Vec<Cow<'a, str>>,
     ) -> Result<(), Bip321Errors<'a>> {
         match key {
             "pj" => {
-                self.pj.extend(value);
+                for val in values {
+                    self.pj.push(val.to_string());
+                }
                 Ok(())
             }
             "lightning" => {
-                self.lightning.extend(value);
+                for val in values {
+                    self.lightning.push(val.to_string());
+                }
                 Ok(())
             }
             "sp" => {
-                self.sp.extend(value);
+                for val in values {
+                    self.sp.push(val.to_string());
+                }
                 Ok(())
             }
             _ => Ok(()),
