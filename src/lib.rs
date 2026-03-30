@@ -2,29 +2,35 @@ use bitcoin::{
     Address, Amount, Denomination, Network,
     address::{NetworkChecked, NetworkUnchecked, NetworkValidation},
 };
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::str::FromStr;
 use urlencoding::decode;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct Bip321<T, NetVal = NetworkUnchecked>
+pub struct Bip321<'a, T, NetVal = NetworkUnchecked>
 where
-    T: Bip321ExtraHandle,
+    T: Bip321ExtraHandle<'a>,
     NetVal: NetworkValidation,
 {
     pub address: Option<Address<NetVal>>,
     pub amount: Option<Amount>,
-    pub label: Option<String>,
-    pub message: Option<String>,
-    pub pop: Option<String>,
-    pub pop_required: bool,
+    pub label: Option<Cow<'a, str>>,
+    pub message: Option<Cow<'a, str>>,
+    pub pop: Option<Cow<'a, str>>,
     pub extras: Option<T>,
 }
 
-pub trait Bip321ExtraHandle: Default {
-    fn handle_param(&mut self, key: &str, value: Vec<String>) -> Result<(), Bip321Errors>;
+pub trait Bip321ExtraHandle<'a>
+where
+    Self: Default,
+{
+    fn handle_param(
+        &mut self,
+        key: &'a str,
+        value: Vec<Cow<'a, str>>,
+    ) -> Result<(), Bip321Errors<'a>>;
 
-    fn validate(&self, _network: Network) -> Result<(), Bip321Errors> {
+    fn validate(&self, _network: Network) -> Result<(), Bip321Errors<'a>> {
         Ok(())
     }
 
@@ -34,23 +40,26 @@ pub trait Bip321ExtraHandle: Default {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum Bip321Errors {
-    DuplicateParam(String),
+pub enum Bip321Errors<'a> {
+    DuplicateParam(&'a str),
     IncorrectSchema,
-    InvalidAddress(String),
+    InvalidAddress(&'a str),
     InvalidAmount,
     NoOnePaymentWasFound,
     InvalidEncoding,
     InvalidRequiredPayment,
 }
 
-impl<T: Bip321ExtraHandle> Bip321<T, NetworkUnchecked> {
-    pub fn into_checked(self, network: Network) -> Result<Bip321<T, NetworkChecked>, Bip321Errors> {
+impl<'a, T: Bip321ExtraHandle<'a>> Bip321<'a, T, NetworkUnchecked> {
+    pub fn into_checked(
+        self,
+        network: Network,
+    ) -> Result<Bip321<'a, T, NetworkChecked>, Bip321Errors<'a>> {
         let checked_addr = match self.address {
             Some(addr) => {
                 let checked = addr
                     .require_network(network)
-                    .map_err(|_| Bip321Errors::InvalidAddress("Wrong Network".to_string()))?;
+                    .map_err(|_| Bip321Errors::InvalidAddress("Wrong Network"))?;
                 Some(checked)
             }
             None => None,
@@ -66,33 +75,29 @@ impl<T: Bip321ExtraHandle> Bip321<T, NetworkUnchecked> {
             label: self.label,
             message: self.message,
             pop: self.pop,
-            pop_required: self.pop_required,
             extras: self.extras,
         })
     }
 }
 
-impl<T: Bip321ExtraHandle> Default for Bip321<T, NetworkUnchecked> {
+impl<'a, T: Bip321ExtraHandle<'a>> Default for Bip321<'a, T, NetworkUnchecked> {
     fn default() -> Self {
         Bip321 {
             address: None,
             amount: None,
             label: None,
             message: None,
-            pop_required: false,
             pop: None,
             extras: None,
         }
     }
 }
 
-impl<T: Bip321ExtraHandle> FromStr for Bip321<T, NetworkUnchecked> {
-    type Err = Bip321Errors;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
+impl<'a, T: Bip321ExtraHandle<'a>> Bip321<'a, T, NetworkUnchecked> {
+    pub fn parse_url(s: &'a str) -> Result<Self, Bip321Errors<'a>> {
         let uri = s.trim();
 
-        if !uri.to_lowercase().starts_with("bitcoin:") {
+        if uri.len() < 8 || !uri[..8].eq_ignore_ascii_case("bitcoin:") {
             return Err(Bip321Errors::IncorrectSchema);
         }
 
@@ -102,14 +107,14 @@ impl<T: Bip321ExtraHandle> FromStr for Bip321<T, NetworkUnchecked> {
             None => (&body[..], ""),
         };
 
-        let mut seens = HashSet::new();
-        let mut extra_params: HashMap<String, Vec<String>> = HashMap::new();
+        let mut seens: HashSet<&'a str> = HashSet::new();
+        let mut extra_params: HashMap<&'a str, Vec<Cow<'a, str>>> = HashMap::new();
         let mut result: Bip321<T, NetworkUnchecked> = Bip321::default();
 
         if !address_str.is_empty() {
             let addr = address_str
                 .parse::<Address<NetworkUnchecked>>()
-                .map_err(|_| Bip321Errors::InvalidAddress(address_str.to_string()))?;
+                .map_err(|_| Bip321Errors::InvalidAddress(address_str))?;
 
             result.address = Some(addr);
         }
@@ -117,24 +122,21 @@ impl<T: Bip321ExtraHandle> FromStr for Bip321<T, NetworkUnchecked> {
         if !query_str.is_empty() {
             for param in query_str.split("&") {
                 let (key, value) = param.split_once("=").unwrap_or((param, ""));
-                let key_lower = key.to_lowercase();
 
-                let check_key = if key_lower != "req-pop" {
-                    key_lower.clone()
-                } else {
-                    "pop".to_string()
-                };
+                let is_pop_related =
+                    key.eq_ignore_ascii_case("pop") || key.eq_ignore_ascii_case("req-pop");
 
-                match check_key.as_str() {
-                    "amount" | "label" | "message" | "pop" => {
-                        if !seens.insert(check_key.clone()) {
-                            return Err(Bip321Errors::DuplicateParam(check_key));
-                        }
+                if is_pop_related {
+                    if !seens.insert("pop") {
+                        return Err(Bip321Errors::DuplicateParam(key));
                     }
-                    _ => {}
+                } else if matches!(key, "amount" | "label" | "message") {
+                    if !seens.insert(key) {
+                        return Err(Bip321Errors::DuplicateParam(key));
+                    }
                 }
 
-                match key_lower.as_str() {
+                match key {
                     "amount" => {
                         if value.contains(",") {
                             return Err(Bip321Errors::InvalidAmount);
@@ -144,23 +146,17 @@ impl<T: Bip321ExtraHandle> FromStr for Bip321<T, NetworkUnchecked> {
                         result.amount = Some(amt);
                     }
                     "label" => {
-                        result.label = Some(
-                            decode(value)
-                                .map_err(|_| Bip321Errors::InvalidEncoding)?
-                                .into_owned(),
-                        );
+                        result.label =
+                            Some(decode(value).map_err(|_| Bip321Errors::InvalidEncoding)?);
                     }
                     "message" => {
-                        result.message = Some(
-                            decode(value)
-                                .map_err(|_| Bip321Errors::InvalidEncoding)?
-                                .into_owned(),
-                        );
+                        result.message =
+                            Some(decode(value).map_err(|_| Bip321Errors::InvalidEncoding)?);
                     }
                     "pop" | "req-pop" => {
                         let forbidden_schemes = ["http", "https", "file", "javascript", "mailto"];
                         let decoded_val = decode(value)
-                            .map(|s| s.into_owned())
+                            .map(|s| s)
                             .map_err(|_| Bip321Errors::InvalidEncoding)?;
                         let value_lower = decoded_val.to_lowercase();
 
@@ -171,17 +167,14 @@ impl<T: Bip321ExtraHandle> FromStr for Bip321<T, NetworkUnchecked> {
                             return Err(Bip321Errors::IncorrectSchema);
                         } else {
                             result.pop = Some(decoded_val);
-                            if key_lower == "req-pop" {
-                                result.pop_required = true;
-                            }
                         }
                     }
                     _ => {
                         let decoded_val = decode(value)
-                            .map(|s| s.into_owned())
+                            .map(|s| s)
                             .map_err(|_| Bip321Errors::InvalidEncoding)?;
                         extra_params
-                            .entry(key_lower.clone())
+                            .entry(key)
                             .or_insert(Vec::new())
                             .push(decoded_val);
                     }
@@ -198,7 +191,7 @@ impl<T: Bip321ExtraHandle> FromStr for Bip321<T, NetworkUnchecked> {
                 }
                 ext.handle_param(stripped, values)?;
             } else {
-                ext.handle_param(&key, values)?
+                ext.handle_param(key, values)?
             }
         }
 
@@ -217,14 +210,18 @@ impl<T: Bip321ExtraHandle> FromStr for Bip321<T, NetworkUnchecked> {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
-pub struct ExtraExample {
-    pj: Vec<String>,
-    sp: Vec<String>,
-    lightning: Vec<String>,
+pub struct ExtraExample<'a> {
+    pj: Vec<Cow<'a, str>>,
+    sp: Vec<Cow<'a, str>>,
+    lightning: Vec<Cow<'a, str>>,
 }
 
-impl Bip321ExtraHandle for ExtraExample {
-    fn handle_param(&mut self, key: &str, value: Vec<String>) -> Result<(), Bip321Errors> {
+impl<'a> Bip321ExtraHandle<'a> for ExtraExample<'a> {
+    fn handle_param(
+        &mut self,
+        key: &'a str,
+        value: Vec<Cow<'a, str>>,
+    ) -> Result<(), Bip321Errors<'a>> {
         match key {
             "pj" => {
                 self.pj.extend(value);
@@ -253,6 +250,8 @@ impl Bip321ExtraHandle for ExtraExample {
 
 #[cfg(test)]
 mod test {
+    use std::str::FromStr;
+
     use super::*;
     // Mainnet Network
     const LEGACY_ADDR: &str = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa";
@@ -269,7 +268,7 @@ mod test {
             (format!("bitcoin:{}", TAPROOT_ADDR), TAPROOT_ADDR),
         ];
         for (url, expected_address) in testcase {
-            let result: Bip321<ExtraExample> = url.parse().unwrap();
+            let result: Bip321<ExtraExample> = Bip321::parse_url(&url).unwrap();
             assert!(
                 result.address.clone().unwrap() == Address::from_str(expected_address).unwrap()
             );
@@ -288,10 +287,8 @@ mod test {
 
     #[test]
     fn only_params() {
-        let url = format!(
-            "bitcoin:?amount=1.5&label=Donation&sp=sp1qsilentpayment&pj=https://endpoint1.com&pj=https://endpoint2.com&lightning=lnbc1_invoice_test_vector",
-        );
-        let result: Bip321<ExtraExample> = url.parse().unwrap();
+        let url = "bitcoin:?amount=1.5&label=Donation&sp=sp1qsilentpayment&pj=https://endpoint1.com&pj=https://endpoint2.com&lightning=lnbc1_invoice_test_vector";
+        let result: Bip321<ExtraExample> = Bip321::parse_url(url).unwrap();
 
         // Verify common params
         assert!(result.address.is_none());
@@ -329,12 +326,12 @@ mod test {
         ];
 
         for (url, expected_key) in testcase {
-            let result: Result<Bip321<ExtraExample>, Bip321Errors> = url.parse();
+            let result: Result<Bip321<ExtraExample>, Bip321Errors> = Bip321::parse_url(url);
 
             assert!(result.is_err());
             assert_eq!(
                 result.unwrap_err(),
-                Bip321Errors::DuplicateParam(expected_key.to_string())
+                Bip321Errors::DuplicateParam(expected_key)
             );
         }
     }
@@ -342,7 +339,7 @@ mod test {
     #[test]
     fn error_on_missing_address_and_extras() {
         let url = "bitcoin:?amount=2.5&label=test";
-        let result: Result<Bip321<ExtraExample>, Bip321Errors> = url.parse();
+        let result: Result<Bip321<ExtraExample>, Bip321Errors> = Bip321::parse_url(url);
 
         assert_eq!(result.unwrap_err(), Bip321Errors::NoOnePaymentWasFound);
     }
@@ -350,7 +347,7 @@ mod test {
     #[test]
     fn error_on_missing_address_and_extras_unknown() {
         let url_unknown = "bitcoin:?unknown=123&another=456";
-        let result: Result<Bip321<ExtraExample>, Bip321Errors> = url_unknown.parse();
+        let result: Result<Bip321<ExtraExample>, Bip321Errors> = Bip321::parse_url(url_unknown);
 
         assert_eq!(result.unwrap_err(), Bip321Errors::NoOnePaymentWasFound);
     }
@@ -359,7 +356,7 @@ mod test {
     fn error_on_wrong_network() {
         // Mainnet Address
         let url = format!("bitcoin:{}", LEGACY_ADDR);
-        let result: Bip321<ExtraExample> = url.parse().unwrap();
+        let result: Bip321<ExtraExample> = Bip321::parse_url(&url).unwrap();
 
         // Trying to validate using Testnet
         let checked = result.into_checked(Network::Testnet);
@@ -367,14 +364,14 @@ mod test {
         assert!(checked.is_err());
         assert_eq!(
             checked.unwrap_err(),
-            Bip321Errors::InvalidAddress("Wrong Network".to_string())
+            Bip321Errors::InvalidAddress("Wrong Network")
         );
     }
 
     #[test]
     fn into_checked_works_without_address() {
         let url = "bitcoin:?lightning=lnbc1...";
-        let result: Bip321<ExtraExample> = url.parse().unwrap();
+        let result: Bip321<ExtraExample> = Bip321::parse_url(url).unwrap();
 
         // The address is empty. Therefore, nothing will be validated.
         let checked = result.into_checked(Network::Bitcoin);
@@ -388,7 +385,7 @@ mod test {
         let testnet_addr = "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx";
         let url = format!("bitcoin:{}", testnet_addr);
 
-        let result: Bip321<ExtraExample> = url.parse().unwrap();
+        let result: Bip321<ExtraExample> = Bip321::parse_url(&url).unwrap();
 
         // This will fail in Mainnet, but succeed in Testnet
         assert!(result.clone().into_checked(Network::Bitcoin).is_err());
@@ -409,7 +406,7 @@ mod test {
         ];
 
         for url in forbidden_testcases {
-            let result: Result<Bip321<ExtraExample>, Bip321Errors> = url.parse();
+            let result: Result<Bip321<ExtraExample>, Bip321Errors> = Bip321::parse_url(url);
 
             // This should fail.
             assert!(result.is_err());
