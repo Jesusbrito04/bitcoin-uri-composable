@@ -21,23 +21,22 @@ bitcoin-uri-composer = "0.1.0"
 ## 🛠 Usage
 **Basic Parsing & Network Checking**
 ```rust
-use bitcoin_uri_composer::{ Bip321, ExtrasExample };
+use bitcoin::Network;
+use bitcoin_uri_composer::{Bip321, ExtraExample};
 
 fn main() {
-    use bitcoin::Network;
-    use bitcoin_uri_composer::{Bip321, ExtraExample};
+    let uri = "bitcoin:bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4?amount=1.5";
     
-    fn main() {
-        let uri = "bitcoin:bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4?amount=1.5";
-        
-        // Parse as Unchecked first
-        let unchecked = uri.parse::<Bip321<ExtraExample>>().unwrap();
-        
-        // Validate against your wallet's network
-        match unchecked.into_checked(Network::Bitcoin) {
-            Ok(payment) => println!("Valid payment for Mainnet!"),
-            Err(e) => eprintln!("Invalid payment: {:?}", e),
-        }
+    // 1. Parse from string (returns Bip321<T, NetworkUnchecked>)
+    let unchecked = Bip321::<ExtraExample>::parse_url(uri).expect("Invalid URI");
+    
+    // 2. Validate against your target network
+    match unchecked.into_checked(Network::Bitcoin) {
+        Ok(payment) => {
+            println!("Address is valid for Mainnet: {:?}", payment.address);
+            println!("Amount to send: {:?}", payment.amount);
+        },
+        Err(e) => eprintln!("Validation error: {:?}", e),
     }
 }
 ```
@@ -47,14 +46,12 @@ fn main() {
 <p>The library allows you to define how to handle non-standard parameters.<p>
 
 ```rust
-let uri = "bitcoin:?pj=https://endpoint1.com&lightning=lnbc1_invoice_test_vector&sp=sp1qsilentpayment";
-let payment = uri.parse::<Bip321<ExtrasExample>>().unwrap();
+let uri = "bitcoin:?sp=sp1qsilentpayment&pj=https://payjoin.example.com";
+let result = Bip321::<ExtraExample>::parse_url(uri).unwrap();
 
-if let Some(extras) = payment.extras {
-    // Access your custom fields
-    println!("Payjoin endpoints: {:?}", extras.pj);
-    println!("Lightning Invoice: {:?}", extras.lightning);
-    println!("Secret Payments: {:?}", extras.sp);
+if let Some(extras) = result.extras {
+    println!("Silent Payment: {:?}", extras.sp);
+    println!("Payjoin Endpoints: {:?}", extras.pj);
 }
 ```
 
@@ -62,10 +59,19 @@ if let Some(extras) = payment.extras {
 **To support new payment protocols, simply implement the Bip321ExtraHandle trait for your own struct:**
 
 ```rust
-pub trait Bip321ExtraHandle: Default {
-    fn handle_param(&mut self, key: &str, value: Vec<String>) -> Result<(), Bip321Errors>;
+pub trait Bip321ExtraHandle<'a>
+where
+    Self: Default,
+{
+    fn handle_param(
+        &mut self,
+        key: &'a str,
+        value: Vec<Cow<'a, str>>,
+    ) -> Result<(), Bip321Errors<'a>>;
+    fn validate(&self, _network: Network) -> Result<(), Bip321Errors<'a>> {
+        Ok(())
+    }
     fn is_empty(&self) -> bool;
-    fn validate(&self, _network: Network) -> Result<(), Bip321Errors> {Ok(())}
     fn is_supported_key(&self, key: &str) -> bool;
 }
 ```
@@ -87,16 +93,20 @@ pub struct MyWalletExtras {
 <p>This tells the parser how to fill your struct and which keys are "safe" to use.<p>
 
 ```rust
-impl Bip321ExtraHandle for MyWalletExtras {
+impl<'a> Bip321ExtraHandle<'a> for MyWalletExtras {
     // 1. Logic to store the parameters
-    fn handle_param(&mut self, key: &str, values: Vec<String>) -> Result<(), Bip321Errors> {
+    fn handle_param(&mut self, key: &'a str, values: Vec<Cow<'a, str>>) -> Result<(), Bip321Errors<'a>> {
         match key {
             "pj" => {
-                self.payjoin_endpoints.extend(values);
+                for val in values {
+                    self.payjoin_endpoints.push(val.to_string());
+                };
                 Ok(())
             }
             "lightning" => {
-                self.lightning_invoice.extend(values);
+                for val in values {
+                    self.lightning_invoice.push(val.to_string());
+                };
                 Ok(())
             }
             _ => Ok(()), // Ignore unknown non-required parameters
@@ -132,5 +142,5 @@ impl Bip321ExtraHandle for MyWalletExtras {
 let uri = "bitcoin:address?pj=https://...&req-unknown=123";
 // This will return Err(Bip321Errors::InvalidRequiredPayment) 
 // because 'unknown' is required but not supported in our handler.
-let result = uri.parse::<Bip321<MyWalletExtras>>();
+let result = Bip321::<MyWalletExtras>::parse_url(uri).unwrap();
 ```
