@@ -7,54 +7,16 @@ use std::collections::{HashMap, HashSet};
 use urlencoding::{decode, encode};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct Bip321<'a, T, NetVal = NetworkUnchecked>
-where
-    T: Bip321ExtraHandle<'a>,
-    NetVal: NetworkValidation,
-{
-    pub address: Option<Address<NetVal>>,
-    pub amount: Option<Amount>,
-    pub label: Option<Cow<'a, str>>,
-    pub message: Option<Cow<'a, str>>,
-    pub pop: Option<Cow<'a, str>>,
-    pub extras: Option<T>,
+pub enum Bip321Errors<'a> {
+    DuplicateParam(&'a str),
+    IncorrectSchema,
+    InvalidAddress(&'a str),
+    InvalidAmount,
+    NoOnePaymentWasFound,
+    InvalidEncoding,
+    InvalidRequiredPayment,
 }
 
-impl<'a, T: Bip321ExtraHandle<'a>> Bip321<'a, T> {
-    pub fn to_url(&self) -> String {
-        let mut uri = String::from("bitcoin:");
-
-        if let Some(ref addr) = self.address {
-            let address = addr.clone().assume_checked().to_string();
-            uri.push_str(&format!("{}", address));
-        }
-
-        let mut params: Vec<String> = Vec::new();
-
-        if let Some(amount) = self.amount {
-            params.push(format!("amount={}", amount.to_btc()));
-        }
-
-        if let Some(label) = &self.label {
-            params.push(format!("label={}", encode(label)));
-        }
-
-        if let Some(ref message) = self.message {
-            params.push(format!("message={}", encode(message)));
-        }
-
-        if let Some(ref pop) = self.pop {
-            params.push(format!("pop={}", encode(pop)));
-        }
-
-        if !params.is_empty() {
-            uri.push('?');
-            uri.push_str(&params.join("&"));
-        }
-
-        uri
-    }
-}
 
 pub trait Bip321ExtraHandle<'a>
 where
@@ -76,60 +38,20 @@ where
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum Bip321Errors<'a> {
-    DuplicateParam(&'a str),
-    IncorrectSchema,
-    InvalidAddress(&'a str),
-    InvalidAmount,
-    NoOnePaymentWasFound,
-    InvalidEncoding,
-    InvalidRequiredPayment,
+pub struct Bip321<'a, T, NetVal = NetworkUnchecked>
+where
+    T: Bip321ExtraHandle<'a>,
+    NetVal: NetworkValidation,
+{
+    pub address: Option<Address<NetVal>>,
+    pub amount: Option<Amount>,
+    pub label: Option<Cow<'a, str>>,
+    pub message: Option<Cow<'a, str>>,
+    pub pop: Option<Cow<'a, str>>,
+    pub extras: Option<T>,
 }
 
-impl<'a, T: Bip321ExtraHandle<'a>> Bip321<'a, T, NetworkUnchecked> {
-    pub fn into_checked(
-        self,
-        network: Network,
-    ) -> Result<Bip321<'a, T, NetworkChecked>, Bip321Errors<'a>> {
-        let checked_addr = match self.address {
-            Some(addr) => {
-                let checked = addr
-                    .require_network(network)
-                    .map_err(|_| Bip321Errors::InvalidAddress("Wrong Network"))?;
-                Some(checked)
-            }
-            None => None,
-        };
-
-        if let Some(ext) = self.extras.as_ref() {
-            ext.validate(network)?;
-        }
-
-        Ok(Bip321 {
-            address: checked_addr,
-            amount: self.amount,
-            label: self.label,
-            message: self.message,
-            pop: self.pop,
-            extras: self.extras,
-        })
-    }
-}
-
-impl<'a, T: Bip321ExtraHandle<'a>> Default for Bip321<'a, T, NetworkUnchecked> {
-    fn default() -> Self {
-        Bip321 {
-            address: None,
-            amount: None,
-            label: None,
-            message: None,
-            pop: None,
-            extras: None,
-        }
-    }
-}
-
-impl<'a, T: Bip321ExtraHandle<'a>> Bip321<'a, T, NetworkUnchecked> {
+impl<'a, T: Bip321ExtraHandle<'a>> Bip321<'a, T> {
     pub fn parse_url(s: &'a str) -> Result<Self, Bip321Errors<'a>> {
         let uri = s.trim();
 
@@ -242,6 +164,82 @@ impl<'a, T: Bip321ExtraHandle<'a>> Bip321<'a, T, NetworkUnchecked> {
         }
 
         Ok(result)
+    }
+
+    pub fn build(&self) -> String {
+        let mut uri = String::from("bitcoin:");
+
+        if let Some(ref addr) = self.address {
+            let address = addr.clone().assume_checked().to_string();
+            uri.push_str(&format!("{}", address));
+        }
+
+        let mut params: Vec<String> = Vec::new();
+
+        if let Some(amount) = self.amount {
+            params.push(format!("amount={}", amount.to_btc()));
+        }
+
+        if let Some(label) = &self.label {
+            params.push(format!("label={}", encode(label)));
+        }
+
+        if let Some(ref message) = self.message {
+            params.push(format!("message={}", encode(message)));
+        }
+
+        if let Some(ref pop) = self.pop {
+            params.push(format!("pop={}", encode(pop)));
+        }
+
+        if !params.is_empty() {
+            uri.push('?');
+            uri.push_str(&params.join("&"));
+        }
+
+        uri
+    }
+}
+impl<'a, T: Bip321ExtraHandle<'a>> Bip321<'a, T, NetworkUnchecked> {
+    pub fn into_checked(
+        self,
+        network: Network,
+    ) -> Result<Bip321<'a, T, NetworkChecked>, Bip321Errors<'a>> {
+        let checked_addr = match self.address {
+            Some(addr) => {
+                let checked = addr
+                    .require_network(network)
+                    .map_err(|_| Bip321Errors::InvalidAddress("Wrong Network"))?;
+                Some(checked)
+            }
+            None => None,
+        };
+
+        if let Some(ext) = self.extras.as_ref() {
+            ext.validate(network)?;
+        }
+
+        Ok(Bip321 {
+            address: checked_addr,
+            amount: self.amount,
+            label: self.label,
+            message: self.message,
+            pop: self.pop,
+            extras: self.extras,
+        })
+    }
+}
+
+impl<'a, T: Bip321ExtraHandle<'a>> Default for Bip321<'a, T, NetworkUnchecked> {
+    fn default() -> Self {
+        Bip321 {
+            address: None,
+            amount: None,
+            label: None,
+            message: None,
+            pop: None,
+            extras: None,
+        }
     }
 }
 

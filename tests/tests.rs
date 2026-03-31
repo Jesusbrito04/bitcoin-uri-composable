@@ -240,7 +240,7 @@ mod test {
             extras: None,
         };
 
-        let generated_url = bip321.to_url();
+        let generated_url = bip321.build();
 
         // Check scheme and address
         assert!(generated_url.starts_with(&format!("bitcoin:{}", SEGWIT_ADDR)));
@@ -260,7 +260,7 @@ mod test {
         let parsed: Bip321<ExtraExample> = Bip321::parse_url(original_uri).expect("Should parse");
 
         // Serialize back to string
-        let serialized = parsed.to_url();
+        let serialized = parsed.build();
 
         // Parse our own generated string
         let roundtripped: Bip321<ExtraExample> =
@@ -285,7 +285,7 @@ mod test {
             extras: None,
         };
 
-        let url = bip321.to_url();
+        let url = bip321.build();
         assert!(url.starts_with("bitcoin:?"));
         assert!(url.contains("amount=0.001"));
         assert!(url.contains("label=Donation"));
