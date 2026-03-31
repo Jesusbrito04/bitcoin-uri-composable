@@ -17,7 +17,6 @@ pub enum Bip321Errors<'a> {
     InvalidRequiredPayment,
 }
 
-
 pub trait Bip321ExtraHandle<'a>
 where
     Self: Default,
@@ -38,6 +37,12 @@ where
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+pub struct PopConfig<'a> {
+    pop: Cow<'a, str>,
+    required: bool,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Bip321<'a, T, NetVal = NetworkUnchecked>
 where
     T: Bip321ExtraHandle<'a>,
@@ -47,7 +52,7 @@ where
     pub amount: Option<Amount>,
     pub label: Option<Cow<'a, str>>,
     pub message: Option<Cow<'a, str>>,
-    pub pop: Option<Cow<'a, str>>,
+    pub pop: Option<PopConfig<'a>>,
     pub extras: Option<T>,
 }
 
@@ -124,7 +129,17 @@ impl<'a, T: Bip321ExtraHandle<'a>> Bip321<'a, T> {
                         {
                             return Err(Bip321Errors::IncorrectSchema);
                         } else {
-                            result.pop = Some(decoded_val);
+                            result.pop = if key != "pop" {
+                                Some(PopConfig {
+                                    pop: decoded_val,
+                                    required: true,
+                                })
+                            } else {
+                                Some(PopConfig {
+                                    pop: decoded_val,
+                                    required: false,
+                                })
+                            };
                         }
                     }
                     _ => {
@@ -188,8 +203,12 @@ impl<'a, T: Bip321ExtraHandle<'a>> Bip321<'a, T> {
             params.push(format!("message={}", encode(message)));
         }
 
-        if let Some(ref pop) = self.pop {
-            params.push(format!("pop={}", encode(pop)));
+        if let Some(ref pop_conf) = self.pop {
+            if pop_conf.required {
+                params.push(format!("req-pop={}", encode(&pop_conf.pop)));
+            } else {
+                params.push(format!("pop={}", encode(&pop_conf.pop)));
+            }
         }
 
         if !params.is_empty() {
