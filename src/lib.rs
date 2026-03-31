@@ -39,7 +39,23 @@ where
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct PopConfig<'a> {
     pop: Cow<'a, str>,
-    required: bool,
+    pub required: bool,
+}
+
+impl<'a> PopConfig<'a> {
+    pub fn finalize_uri(
+        &self,
+        source_key: &str,
+        payment_data_hex: &str,
+    ) -> Result<String, Bip321Errors<'a>> {
+        if !payment_data_hex.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(Bip321Errors::InvalidEncoding);
+        };
+
+        let append_to_pop = format!("{}{}={}", self.pop, source_key, payment_data_hex);
+
+        Ok(append_to_pop)
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]

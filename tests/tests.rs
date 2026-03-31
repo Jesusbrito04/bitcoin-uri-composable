@@ -1,5 +1,5 @@
 use bitcoin::{Address, Amount, Network, address::NetworkChecked};
-use bitcoin_uri_composer::{Bip321, Bip321Errors, ExtraExample};
+use bitcoin_uri_composer::{Bip321, Bip321Errors, ExtraExample, PopConfig};
 use std::borrow::Cow;
 use std::str::FromStr;
 
@@ -289,5 +289,93 @@ mod test {
         assert!(url.starts_with("bitcoin:?"));
         assert!(url.contains("amount=0.001"));
         assert!(url.contains("label=Donation"));
+    }
+
+    #[test]
+    fn test_pop_uri_finalization_success() {
+        let url = format!(
+            "bitcoin:{}?req-pop=mywallet%3A%2F%2Fcallback%3Fid%3D123%26",
+            LEGACY_ADDR
+        );
+
+        let result: Bip321<ExtraExample> = Bip321::parse_url(&url).unwrap();
+        let pop_config = result.pop.expect("PopConfig should be present");
+
+        let tx_hex = "01000000018a";
+        let final_uri = pop_config
+            .finalize_uri("onchain", tx_hex)
+            .expect("Should finalize successfully");
+
+        assert_eq!(final_uri, "mywallet://callback?id=123&onchain=01000000018a");
+    }
+
+    #[test]
+    fn test_pop_invalid_hex_data() {
+        let url = format!("bitcoin:{}?pop=app%3A%2F%2Fcallback%3F", LEGACY_ADDR);
+        let result: Bip321<ExtraExample> = Bip321::parse_url(&url).unwrap();
+        let pop_config = result.pop.unwrap();
+
+        // Providing non-hex data should trigger an error
+        let result = pop_config.finalize_uri("onchain", "not_a_hex_string");
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), Bip321Errors::InvalidEncoding);
+    }
+
+    #[test]
+    fn test_required_vs_optional_pop() {
+        let req_url = format!("bitcoin:{}?req-pop=app%3A%2F%2Fcb", LEGACY_ADDR);
+        let opt_url = format!("bitcoin:{}?pop=app%3A%2F%2Fcb", LEGACY_ADDR);
+
+        let res_req: Bip321<ExtraExample> = Bip321::parse_url(&req_url).unwrap();
+        let res_opt: Bip321<ExtraExample> = Bip321::parse_url(&opt_url).unwrap();
+
+        assert!(
+            res_req.pop.unwrap().required,
+            "req-pop must set required to true"
+        );
+        assert!(
+            !res_opt.pop.unwrap().required,
+            "pop must set required to false"
+        );
+    }
+
+    #[test]
+    fn test_bitcoin_scheme_is_case_insensitive() {
+        let urls = vec![
+            format!("BITCOIN:{}", LEGACY_ADDR),
+            format!("BitCoin:{}", LEGACY_ADDR),
+            format!("bitcoin:{}", LEGACY_ADDR),
+        ];
+
+        for url in urls {
+            let result: Result<Bip321<ExtraExample>, Bip321Errors> = Bip321::parse_url(&url);
+            assert!(
+                result.is_ok(),
+                "Scheme should be case-insensitive for: {}",
+                url
+            );
+        }
+    }
+
+    #[test]
+    fn test_empty_address_with_valid_extra_payment_instruction() {
+        // BIP-321 allows empty address if at least one payment instruction (like lightning) exists
+        let url = "bitcoin:?lightning=lnbc10u1pvjlutp...";
+        let result = Bip321::<ExtraExample>::parse_url(url);
+
+        assert!(result.is_ok());
+        let res = result.unwrap();
+        assert!(res.address.is_none());
+        assert!(!res.extras.as_ref().unwrap().lightning.is_empty());
+    }
+
+    #[test]
+    fn test_pop_forbidden_schemes_detection() {
+        // Even if encoded, forbidden schemes must be rejected
+        let url = format!("bitcoin:{}?pop=javascript%3Aalert(1)", LEGACY_ADDR);
+        let result = Bip321::<ExtraExample>::parse_url(&url);
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), Bip321Errors::IncorrectSchema);
     }
 }
