@@ -4,7 +4,7 @@ use bitcoin::{
 };
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use urlencoding::decode;
+use urlencoding::{decode, encode};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Bip321<'a, T, NetVal = NetworkUnchecked>
@@ -18,6 +18,42 @@ where
     pub message: Option<Cow<'a, str>>,
     pub pop: Option<Cow<'a, str>>,
     pub extras: Option<T>,
+}
+
+impl<'a, T: Bip321ExtraHandle<'a>> Bip321<'a, T> {
+    pub fn to_url(&self) -> String {
+        let mut uri = String::from("bitcoin:");
+
+        if let Some(ref addr) = self.address {
+            let address = addr.clone().assume_checked().to_string();
+            uri.push_str(&format!("{}", address));
+        }
+
+        let mut params: Vec<String> = Vec::new();
+
+        if let Some(amount) = self.amount {
+            params.push(format!("amount={}", amount.to_btc()));
+        }
+
+        if let Some(label) = &self.label {
+            params.push(format!("label={}", encode(label)));
+        }
+
+        if let Some(ref message) = self.message {
+            params.push(format!("message={}", encode(message)));
+        }
+
+        if let Some(ref pop) = self.pop {
+            params.push(format!("pop={}", encode(pop)));
+        }
+
+        if !params.is_empty() {
+            uri.push('?');
+            uri.push_str(&params.join("&"));
+        }
+
+        uri
+    }
 }
 
 pub trait Bip321ExtraHandle<'a>
@@ -211,9 +247,9 @@ impl<'a, T: Bip321ExtraHandle<'a>> Bip321<'a, T, NetworkUnchecked> {
 
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
 pub struct ExtraExample {
-    pj: Vec<String>,
-    sp: Vec<String>,
-    lightning: Vec<String>,
+    pub pj: Vec<String>,
+    pub sp: Vec<String>,
+    pub lightning: Vec<String>,
 }
 
 impl<'a> Bip321ExtraHandle<'a> for ExtraExample {
@@ -251,230 +287,5 @@ impl<'a> Bip321ExtraHandle<'a> for ExtraExample {
 
     fn is_supported_key(&self, key: &str) -> bool {
         matches!(key, "pj" | "lightning" | "sp")
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use std::str::FromStr;
-
-    use super::*;
-    // Mainnet Network
-    const LEGACY_ADDR: &str = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa";
-    const P2SH_ADDR: &str = "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy";
-    const SEGWIT_ADDR: &str = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4";
-    const TAPROOT_ADDR: &str = "bc1p0hc953htakzhgfvpju4q6d6y5kncvm87pjnzdj77wye23kqsln5sy4j69g";
-
-    #[test]
-    fn only_the_address() {
-        let testcase = vec![
-            (format!("bitcoin:{}", LEGACY_ADDR), LEGACY_ADDR),
-            (format!("bitcoin:{}", P2SH_ADDR), P2SH_ADDR),
-            (format!("bitcoin:{}", SEGWIT_ADDR), SEGWIT_ADDR),
-            (format!("bitcoin:{}", TAPROOT_ADDR), TAPROOT_ADDR),
-        ];
-        for (url, expected_address) in testcase {
-            let result: Bip321<ExtraExample> = Bip321::parse_url(&url).unwrap();
-            assert!(
-                result.address.clone().unwrap() == Address::from_str(expected_address).unwrap()
-            );
-
-            let checked: Bip321<ExtraExample, NetworkChecked> =
-                result.into_checked(Network::Bitcoin).unwrap();
-            assert!(
-                checked.address.unwrap()
-                    == Address::from_str(expected_address)
-                        .unwrap()
-                        .assume_checked()
-            );
-            assert!(checked.extras.is_none());
-        }
-    }
-
-    #[test]
-    fn only_params() {
-        let url = "bitcoin:?amount=1.5&label=Donation&sp=sp1qsilentpayment&pj=https://endpoint1.com&pj=https://endpoint2.com&lightning=lnbc1_invoice_test_vector";
-        let result: Bip321<ExtraExample> = Bip321::parse_url(url).unwrap();
-
-        // Verify common params
-        assert!(result.address.is_none());
-        assert_eq!(result.amount.unwrap(), Amount::from_btc(1.5).unwrap());
-        assert_eq!(result.label.unwrap(), "Donation");
-
-        // Verify extra params
-        assert_eq!(result.extras.as_ref().unwrap().sp[0], "sp1qsilentpayment");
-        assert_eq!(
-            result.extras.as_ref().unwrap().lightning[0],
-            "lnbc1_invoice_test_vector"
-        );
-
-        // Verify multiple query parameters with the same key MAY be included for query parameters representing payment instructions.
-        assert_eq!(
-            result.extras.as_ref().unwrap().pj[0],
-            "https://endpoint1.com"
-        );
-        assert_eq!(
-            result.extras.as_ref().unwrap().pj[1],
-            "https://endpoint2.com"
-        );
-    }
-
-    #[test]
-    fn fail_on_duplicate_label_message_pop() {
-        // Verify multiple query parameters with the same key MUST NOT be included for keys "label", "message", or "pop"
-        let testcase = vec![
-            ("bitcoin:?amount=1.5&label=Donation&label=Donation", "label"),
-            (
-                "bitcoin:?amount=1.5&message=Donation&message=Donation",
-                "message",
-            ),
-            ("bitcoin:?amount=1.5&pop=Donation&pop=Donation", "pop"),
-        ];
-
-        for (url, expected_key) in testcase {
-            let result: Result<Bip321<ExtraExample>, Bip321Errors> = Bip321::parse_url(url);
-
-            assert!(result.is_err());
-            assert_eq!(
-                result.unwrap_err(),
-                Bip321Errors::DuplicateParam(expected_key)
-            );
-        }
-    }
-
-    #[test]
-    fn error_on_missing_address_and_extras() {
-        let url = "bitcoin:?amount=2.5&label=test";
-        let result: Result<Bip321<ExtraExample>, Bip321Errors> = Bip321::parse_url(url);
-
-        assert_eq!(result.unwrap_err(), Bip321Errors::NoOnePaymentWasFound);
-    }
-
-    #[test]
-    fn error_on_missing_address_and_extras_unknown() {
-        let url_unknown = "bitcoin:?unknown=123&another=456";
-        let result: Result<Bip321<ExtraExample>, Bip321Errors> = Bip321::parse_url(url_unknown);
-
-        assert_eq!(result.unwrap_err(), Bip321Errors::NoOnePaymentWasFound);
-    }
-
-    #[test]
-    fn error_on_wrong_network() {
-        // Mainnet Address
-        let url = format!("bitcoin:{}", LEGACY_ADDR);
-        let result: Bip321<ExtraExample> = Bip321::parse_url(&url).unwrap();
-
-        // Trying to validate using Testnet
-        let checked = result.into_checked(Network::Testnet);
-
-        assert!(checked.is_err());
-        assert_eq!(
-            checked.unwrap_err(),
-            Bip321Errors::InvalidAddress("Wrong Network")
-        );
-    }
-
-    #[test]
-    fn into_checked_works_without_address() {
-        let url = "bitcoin:?lightning=lnbc1...";
-        let result: Bip321<ExtraExample> = Bip321::parse_url(url).unwrap();
-
-        // The address is empty. Therefore, nothing will be validated.
-        let checked = result.into_checked(Network::Bitcoin);
-
-        assert!(checked.is_ok());
-        assert!(checked.unwrap().address.is_none());
-    }
-
-    #[test]
-    fn testnet_address_validation() {
-        let testnet_addr = "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx";
-        let url = format!("bitcoin:{}", testnet_addr);
-
-        let result: Bip321<ExtraExample> = Bip321::parse_url(&url).unwrap();
-
-        // This will fail in Mainnet, but succeed in Testnet
-        assert!(result.clone().into_checked(Network::Bitcoin).is_err());
-        assert!(result.into_checked(Network::Testnet).is_ok());
-    }
-
-    #[test]
-    fn error_on_forbidden_req_pop_schemes() {
-        // BIP 321: A wallet MUST validate that the scheme is not http, https, file, javascript, or mailto.
-        // Since 'req-pop' (required), the full URI should be considered invalid.
-
-        let forbidden_testcases = vec![
-            "bitcoin:1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa?req-pop=http://rastreador.com/ip",
-            "bitcoin:1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa?req-pop=https://phishing.com/login",
-            "bitcoin:1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa?req-pop=javascript:alert('hack')",
-            "bitcoin:1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa?req-pop=file:///etc/shadow",
-            "bitcoin:1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa?req-pop=mailto:scam@ataque.com",
-        ];
-
-        for url in forbidden_testcases {
-            let result: Result<Bip321<ExtraExample>, Bip321Errors> = Bip321::parse_url(url);
-
-            // This should fail.
-            assert!(result.is_err());
-            assert_eq!(result.unwrap_err(), Bip321Errors::IncorrectSchema);
-        }
-    }
-
-    #[test]
-    fn url_encoding_in_label_and_message() {
-        // BIP 321: The values ​​have to be encoded to (URL-encoded) correctly.
-        let url = format!(
-            "bitcoin:{}?label=Satoshi%20Nakamoto&message=Payment%20for%20services%21%3F",
-            LEGACY_ADDR
-        );
-        let result: Bip321<ExtraExample> = Bip321::parse_url(&url).unwrap();
-
-        assert_eq!(result.label.unwrap(), "Satoshi Nakamoto");
-        assert_eq!(result.message.unwrap(), "Payment for services!?");
-    }
-
-    #[test]
-    fn fail_on_unknown_required_parameter() {
-        // BIP 321: If a parameter starts with "req-" and the software doesn't understand it,
-        // MUST consider the entire URI as invalid.
-        let url = format!("bitcoin:{}?req-future=12345", LEGACY_ADDR);
-        let result: Result<Bip321<ExtraExample>, Bip321Errors> = Bip321::parse_url(&url);
-
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), Bip321Errors::InvalidRequiredPayment);
-    }
-
-    #[test]
-    fn success_on_known_required_parameter() {
-        let url = "bitcoin:?req-sp=sp1qsilentpayment";
-        let result: Bip321<ExtraExample> = Bip321::parse_url(url).unwrap();
-
-        assert!(result.address.is_none());
-        assert_eq!(result.extras.as_ref().unwrap().sp[0], "sp1qsilentpayment");
-    }
-
-    #[test]
-    fn invalid_amount_formats() {
-        let bad_amounts = vec![
-            format!("bitcoin:{}?amount=1,5", LEGACY_ADDR),
-            format!("bitcoin:{}?amount=-0.5", LEGACY_ADDR),
-            format!("bitcoin:{}?amount=1.5.0", LEGACY_ADDR),
-            format!("bitcoin:{}?amount=abc", LEGACY_ADDR),
-        ];
-
-        for url in bad_amounts {
-            let result: Result<Bip321<ExtraExample>, Bip321Errors> = Bip321::parse_url(&url);
-            assert!(result.is_err());
-            assert_eq!(result.unwrap_err(), Bip321Errors::InvalidAmount);
-        }
-    }
-
-    #[test]
-    fn fail_on_duplicate_amount() {
-        let url = format!("bitcoin:{}?amount=1.0&amount=2.0", LEGACY_ADDR);
-        let result: Result<Bip321<ExtraExample>, Bip321Errors> = Bip321::parse_url(&url);
-
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), Bip321Errors::DuplicateParam("amount"));
     }
 }
