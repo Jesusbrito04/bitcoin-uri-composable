@@ -1,5 +1,5 @@
 use bitcoin::{Address, Amount, Network, address::NetworkChecked};
-use bitcoin_uri_composer::{Bip321, Bip321Errors, ExtraExample, PopConfig};
+use bitcoin_uri_composer::{Bip321, Bip321Errors, ExtraExample};
 use std::borrow::Cow;
 use std::str::FromStr;
 
