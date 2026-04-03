@@ -2,6 +2,12 @@
 name = "bitcoin-uri-composer"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+description = "A Rust library for composing Bitcoin URIs according to BIP-321."
+repository = "https://github.com/Jesusbrito04/bitcoin-uri-composable"
+readme = "README.md"
+keywords = ["bitcoin", "uri", "bip-321", "rust"]
+categories = ["cryptography", "network-programming", "utilities", "parsing", "serialization"]
 
 [dependencies]
 bitcoin = "0.32.8"
