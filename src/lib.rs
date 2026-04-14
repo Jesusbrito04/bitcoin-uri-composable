@@ -1,3 +1,8 @@
+//! # BIP-321 Bitcoin URI Library
+//! 
+//! This crate provides a flexible parser and builder for Bitcoin URIs according to [BIP-321](https://github.com/bitcoin/bips/blob/master/bip-0321.mediawiki).
+//! It supports standard parameters like `address`, `amount`, and `message`, as well as "Proof of Payment" (POP) and custom extra parameters.
+
 use bitcoin::{
     Address, Amount, Denomination, Network,
     address::{NetworkChecked, NetworkUnchecked, NetworkValidation},
@@ -6,43 +11,65 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use urlencoding::{decode, encode};
 
+/// Errors encountered while parsing or validating a BIP-321 URI.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Bip321Errors<'a> {
+    /// The same parameter was provided multiple times.
     DuplicateParam(&'a str),
+    /// The URI does not start with the `bitcoin:` schema or contains forbidden protocols in POP.
     IncorrectSchema,
+    /// The provided address is syntactically invalid or for the wrong network.
     InvalidAddress(&'a str),
+    /// The amount is not a valid decimal or contains invalid characters (like commas).
     InvalidAmount,
+    /// The URI contains neither a valid address nor valid extra payment data.
     NoOnePaymentWasFound,
+    /// Failed to decode percent-encoded characters.
     InvalidEncoding,
+    /// A parameter prefixed with `req-` was encountered but is not supported by the handler.
     InvalidRequiredPayment,
 }
 
+/// A trait to handle custom/extra parameters in a Bitcoin URI.
+/// 
+/// Implement this to support extensions like Payjoin (`pj`), Lightning (`lightning`), or Silent Payments (`sp`).
 pub trait Bip321ExtraHandle<'a>
 where
     Self: Default,
 {
+    /// Processes a key-value pair found in the URI query string.
     fn handle_param(
         &mut self,
         key: &'a str,
         value: Vec<Cow<'a, str>>,
     ) -> Result<(), Bip321Errors<'a>>;
 
+    /// Optional validation step (e.g., checking address types for a specific network).
     fn validate(&self, _network: Network) -> Result<(), Bip321Errors<'a>> {
         Ok(())
     }
 
+    /// Returns true if no extra data has been collected.
     fn is_empty(&self) -> bool;
 
+    /// Checks if a specific key is supported. Used to validate `req-` (required) parameters.
     fn is_supported_key(&self, key: &str) -> bool;
 }
 
+/// Configuration for Proof of Payment (POP) parameters.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct PopConfig<'a> {
+    /// The base POP URI.
     pop: Cow<'a, str>,
+    /// Whether this POP is mandatory (using the `req-pop` key).
     pub required: bool,
 }
 
 impl<'a> PopConfig<'a> {
+    /// Appends payment data to the POP URI.
+    /// 
+    /// # Errors
+    /// Returns `InvalidEncoding` if the `payment_data_hex` is not valid hex.
     pub fn finalize_uri(
         &self,
         source_key: &str,
@@ -58,21 +85,39 @@ impl<'a> PopConfig<'a> {
     }
 }
 
+/// The core BIP-321 structure representing a Bitcoin Payment Request.
+/// 
+/// `T` is the extra parameters handler, and `NetVal` tracks if the address network has been checked.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Bip321<'a, T, NetVal = NetworkUnchecked>
 where
     T: Bip321ExtraHandle<'a>,
     NetVal: NetworkValidation,
 {
+    /// The destination Bitcoin address.
     pub address: Option<Address<NetVal>>,
+    /// The amount to be paid.
     pub amount: Option<Amount>,
+    /// A label for the receiver (e.g., "Satoshi Nakamoto").
     pub label: Option<Cow<'a, str>>,
+    /// A message describing the transaction.
     pub message: Option<Cow<'a, str>>,
+    /// Proof of Payment configuration.
     pub pop: Option<PopConfig<'a>>,
+    /// Custom extra parameters.
     pub extras: Option<T>,
 }
 
 impl<'a, T: Bip321ExtraHandle<'a>> Bip321<'a, T> {
+    /// Parses a string into a `Bip321` structure.
+    /// 
+    /// # Example
+    /// ```
+    /// # use bitcoin_uri_composer::{ Bip321, ExtraExample };
+    /// let uri = "bitcoin:175tWpb8K1S7NmH4Zx6rewF9WQrcZv245W?amount=20.3&label=Luke-Jr";
+    /// let request: Bip321<ExtraExample> = Bip321::parse_url(uri).unwrap();
+    /// assert_eq!(request.label.unwrap(), "Luke-Jr");
+    /// ```
     pub fn parse_url(s: &'a str) -> Result<Self, Bip321Errors<'a>> {
         let uri = s.trim();
 
@@ -197,6 +242,17 @@ impl<'a, T: Bip321ExtraHandle<'a>> Bip321<'a, T> {
         Ok(result)
     }
 
+    /// Serializes the structure back into a standard `bitcoin:...` URI string.
+    /// 
+    /// # Example
+    /// ```
+    /// # use bitcoin_uri_composer::{Bip321, ExtraExample};
+    /// # use std::borrow::Cow;
+    /// let mut request: Bip321<ExtraExample> = Bip321::default();
+    /// request.label = Some(Cow::Borrowed("Donation"));
+    /// let uri = request.build();
+    /// assert!(uri.contains("label=Donation"));
+    /// ```
     pub fn build(&self) -> String {
         let mut uri = String::from("bitcoin:");
 
@@ -235,7 +291,12 @@ impl<'a, T: Bip321ExtraHandle<'a>> Bip321<'a, T> {
         uri
     }
 }
+
 impl<'a, T: Bip321ExtraHandle<'a>> Bip321<'a, T, NetworkUnchecked> {
+    /// Validates the address against a specific Bitcoin network.
+    /// 
+    /// # Errors
+    /// Returns `InvalidAddress` if the network does not match.
     pub fn into_checked(
         self,
         network: Network,
@@ -278,10 +339,14 @@ impl<'a, T: Bip321ExtraHandle<'a>> Default for Bip321<'a, T, NetworkUnchecked> {
     }
 }
 
+/// An example implementation of `Bip321ExtraHandle` supporting Payjoin, Lightning, and Silent Payments.
 #[derive(Debug, PartialEq, Eq, Clone, Default)]
 pub struct ExtraExample {
+    /// Payjoin URLs.
     pub pj: Vec<String>,
+    /// Silent Payment addresses.
     pub sp: Vec<String>,
+    /// Lightning Network invoices.
     pub lightning: Vec<String>,
 }
 
